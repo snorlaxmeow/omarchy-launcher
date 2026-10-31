@@ -1343,6 +1343,9 @@ class MainActivity : AppCompatActivity() {
             handler.postDelayed({ retryMediaDiscovery(0) }, 400L)
         }
         refreshDefaultLauncherPrompts()
+        if (permissionConfigOpen && settings.visibility == View.VISIBLE) {
+            fillPermissionSettings()
+        }
     }
 
     private fun refreshDefaultLauncherPrompts() {
@@ -2873,6 +2876,8 @@ class MainActivity : AppCompatActivity() {
             } else {
                 wifiScanStatus?.text = "LOCATION PERMISSION DENIED"
             }
+        } else if (requestCode == 742 && permissionConfigOpen && settings.visibility == View.VISIBLE) {
+            fillPermissionSettings()
         }
     }
 
@@ -3066,6 +3071,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var styleConfigOpen = false
+    private var permissionConfigOpen = false
 
     private fun cycle(key: String, n: Int, def: Int = 0) {
         val returnToStyle = styleConfigOpen
@@ -3082,6 +3088,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun fillSettings() {
         styleConfigOpen = false
+        permissionConfigOpen = false
         val p = pal
         setBox.removeAllViews()
         setBox.addView(txt(15f, p.cBlue, "~/config"))
@@ -3110,8 +3117,9 @@ class MainActivity : AppCompatActivity() {
             try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }
             catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }
-        row("media access", if (mediaAccess()) "granted" else "enable ›") {
-            openSystem(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+        row("perms", "access & system settings ›") {
+            fillPermissionSettings()
+            setScroll.scrollTo(0, 0)
         }
         row("vpn app", allApps.find { it.pkg == prefs.getString("vpn_pkg", null) }?.label ?: "choose ›") {
             fillVpnPicker(); setScroll.scrollTo(0, 0)
@@ -3120,6 +3128,149 @@ class MainActivity : AppCompatActivity() {
             fillHidden(); setScroll.scrollTo(0, 0)
         }
         row("close", "esc") { closeSettings() }
+    }
+
+    private fun fillPermissionSettings() {
+        permissionConfigOpen = true
+        styleConfigOpen = false
+        val p = pal
+        setBox.removeAllViews()
+        setBox.addView(txt(15f, p.cBlue, "~/config/permissions"))
+        setBox.addView(txt(11f, p.cDim, "access Sorairo uses and manage each permission").apply {
+            setPadding(0, dp(2), 0, dp(6))
+        })
+        setBox.addView(txt(14f, p.cAccent, "← back").apply {
+            setPadding(0, dp(8), 0, dp(8))
+            setOnClickListener { fillSettings(); setScroll.scrollTo(0, 0) }
+        })
+
+        fun locationEnabled(): Boolean = if (Build.VERSION.SDK_INT >= 28) {
+            (getSystemService(LOCATION_SERVICE) as android.location.LocationManager).isLocationEnabled
+        } else {
+            Settings.Secure.getInt(
+                contentResolver, Settings.Secure.LOCATION_MODE,
+                Settings.Secure.LOCATION_MODE_OFF
+            ) != Settings.Secure.LOCATION_MODE_OFF
+        }
+
+        fun permissionRow(
+            title: String,
+            detail: String,
+            state: String,
+            granted: Boolean,
+            onTap: () -> Unit
+        ) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
+                setOnClickListener { onTap() }
+            }
+            val copy = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            copy.addView(txt(14f, p.cFg, title))
+            copy.addView(txt(11f, p.cDim, detail).apply {
+                setPadding(0, dp(3), dp(8), 0)
+            })
+            row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(txt(11f, if (granted) p.cGreen else p.cAccent, state))
+            setBox.addView(row)
+            setBox.addView(View(this).apply {
+                setBackgroundColor(p.cDim and 0x55FFFFFF)
+            }, LinearLayout.LayoutParams(-1, dp(1)))
+        }
+
+        val homeGranted = isDefaultLauncher()
+        permissionRow(
+            "Default launcher",
+            "Lets Sorairo handle the Home button and display your workspaces.",
+            if (homeGranted) "active" else "set up ›",
+            homeGranted
+        ) {
+            try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }
+            catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+        }
+
+        val notificationsGranted = mediaAccess()
+        permissionRow(
+            "Notification access",
+            "Used by the media panel to read media-session and playback information.",
+            if (notificationsGranted) "granted" else "enable ›",
+            notificationsGranted
+        ) {
+            try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            catch (_: Exception) { openSystem(Settings.ACTION_SETTINGS) }
+        }
+
+        val writeGranted = Settings.System.canWrite(this)
+        permissionRow(
+            "Modify system settings",
+            "Allows the brightness control to change the screen brightness directly.",
+            if (writeGranted) "granted" else "enable ›",
+            writeGranted
+        ) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {
+                openSystem(Settings.ACTION_SETTINGS)
+            }
+        }
+
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        val dndGranted = notificationManager.isNotificationPolicyAccessGranted
+        permissionRow(
+            "Do Not Disturb access",
+            "Used by the quick-settings silent tile to change the ringer mode.",
+            if (dndGranted) "granted" else "enable ›",
+            dndGranted
+        ) {
+            try { startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)) }
+            catch (_: Exception) { openSystem(Settings.ACTION_SETTINGS) }
+        }
+
+        val locationGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val locationReady = locationGranted && locationEnabled()
+        permissionRow(
+            "Location for Wi-Fi discovery",
+            "Only used when you opt in to scan and display nearby Wi-Fi networks. Not needed to open the Wi-Fi panel.",
+            when {
+                locationReady -> "ready"
+                locationGranted -> "turn on ›"
+                else -> "enable ›"
+            },
+            locationReady
+        ) {
+            when {
+                !locationGranted -> requestPermissions(
+                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 742
+                )
+                !locationEnabled() -> try {
+                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                } catch (_: Exception) {
+                    openSystem(Settings.ACTION_SETTINGS)
+                }
+                else -> Toast.makeText(this, "Wi-Fi discovery is ready", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        permissionRow(
+            "Network & Wi-Fi state",
+            "Install-time access used to detect connectivity and read Wi-Fi state. Android grants this automatically.",
+            "automatic",
+            true
+        ) { }
+
+        permissionRow(
+            "Audio settings",
+            "Install-time access used for supported audio controls. Android grants this automatically.",
+            "automatic",
+            true
+        ) { }
+
+        setBox.addView(txt(
+            11f, p.cDim,
+            "Sorairo never enables special access silently. Android may ask you to confirm access in its own settings."
+        ).apply { setPadding(0, dp(10), 0, dp(4)) })
     }
 
     private fun fillStyleSettings() {
